@@ -1,12 +1,13 @@
 """
 Technical Analysis Model
-Gelişmiş teknik analiz indikatörleri ve sinyal üretimi
+Gelişmiş teknik analiz indikatörleri ve sinyal üretimi (pandas-ta kullanarak)
 """
 
 import asyncio
 import logging
 import numpy as np
 import pandas as pd
+import pandas_ta as ta
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 import aiohttp
@@ -48,7 +49,7 @@ class TechnicalAnalysisResult:
     timestamp: datetime
 
 class TechnicalAnalysisModel:
-    """Gelişmiş teknik analiz modeli"""
+    """Gelişmiş teknik analiz modeli (pandas-ta kullanarak)"""
     
     def __init__(self, symbol: str = 'BTCUSDT'):
         """
@@ -191,155 +192,56 @@ class TechnicalAnalysisModel:
             return None
     
     async def _calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Tüm teknik indikatörleri hesapla"""
+        """Tüm teknik indikatörleri hesapla (pandas-ta kullanarak)"""
         try:
             df = data.copy()
             
+            # pandas-ta ile indikatörleri hesapla
             # RSI
-            df = self._calculate_rsi(df)
+            df['rsi'] = ta.rsi(df['close'], length=self.rsi_period)
             
             # MACD
-            df = self._calculate_macd(df)
+            macd_data = ta.macd(df['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+            if macd_data is not None:
+                df = pd.concat([df, macd_data], axis=1)
             
             # Bollinger Bands
-            df = self._calculate_bollinger_bands(df)
+            bb_data = ta.bbands(df['close'], length=self.bb_period, std=self.bb_std)
+            if bb_data is not None:
+                df = pd.concat([df, bb_data], axis=1)
+                # BB position hesapla
+                if f'BBL_{self.bb_period}_{self.bb_std}' in df.columns and f'BBU_{self.bb_period}_{self.bb_std}' in df.columns:
+                    bb_lower = df[f'BBL_{self.bb_period}_{self.bb_std}']
+                    bb_upper = df[f'BBU_{self.bb_period}_{self.bb_std}']
+                    df['bb_position'] = (df['close'] - bb_lower) / (bb_upper - bb_lower)
+                    df['bb_width'] = (bb_upper - bb_lower) / df[f'BBM_{self.bb_period}_{self.bb_std}']
             
             # Moving Averages
-            df = self._calculate_moving_averages(df)
+            df['sma_20'] = ta.sma(df['close'], length=self.sma_short)
+            df['sma_50'] = ta.sma(df['close'], length=self.sma_medium)
+            df['sma_200'] = ta.sma(df['close'], length=self.sma_long)
+            df['ema_12'] = ta.ema(df['close'], length=12)
+            df['ema_26'] = ta.ema(df['close'], length=26)
             
             # Volume indicators
-            df = self._calculate_volume_indicators(df)
+            df['volume_sma'] = ta.sma(df['volume'], length=self.volume_sma_period)
+            df['volume_ratio'] = df['volume'] / df['volume_sma']
+            
+            # OBV
+            df['obv'] = ta.obv(df['close'], df['volume'])
             
             # Additional indicators
-            df = self._calculate_additional_indicators(df)
+            df['stoch_k'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHk_14_3_3']
+            df['stoch_d'] = ta.stoch(df['high'], df['low'], df['close'])['STOCHd_14_3_3']
+            df['williams_r'] = ta.willr(df['high'], df['low'], df['close'])
+            df['cci'] = ta.cci(df['high'], df['low'], df['close'])
+            df['atr'] = ta.atr(df['high'], df['low'], df['close'])
             
             return df
             
         except Exception as e:
             self.logger.error(f"Indicator calculation error: {e}")
             return data
-    
-    def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
-        """RSI hesapla"""
-        try:
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-            rs = gain / loss
-            df['rsi'] = 100 - (100 / (1 + rs))
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"RSI calculation error: {e}")
-            return df
-    
-    def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
-        """MACD hesapla"""
-        try:
-            ema_fast = df['close'].ewm(span=self.macd_fast).mean()
-            ema_slow = df['close'].ewm(span=self.macd_slow).mean()
-            
-            df['macd'] = ema_fast - ema_slow
-            df['macd_signal'] = df['macd'].ewm(span=self.macd_signal).mean()
-            df['macd_histogram'] = df['macd'] - df['macd_signal']
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"MACD calculation error: {e}")
-            return df
-    
-    def _calculate_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Bollinger Bands hesapla"""
-        try:
-            df['bb_middle'] = df['close'].rolling(window=self.bb_period).mean()
-            bb_std = df['close'].rolling(window=self.bb_period).std()
-            
-            df['bb_upper'] = df['bb_middle'] + (bb_std * self.bb_std)
-            df['bb_lower'] = df['bb_middle'] - (bb_std * self.bb_std)
-            
-            # BB position (0-1 arası, 0=lower band, 1=upper band)
-            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-            
-            # BB width (volatilite göstergesi)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"Bollinger Bands calculation error: {e}")
-            return df
-    
-    def _calculate_moving_averages(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Moving averages hesapla"""
-        try:
-            df['sma_20'] = df['close'].rolling(window=self.sma_short).mean()
-            df['sma_50'] = df['close'].rolling(window=self.sma_medium).mean()
-            df['sma_200'] = df['close'].rolling(window=self.sma_long).mean()
-            
-            # EMA'lar
-            df['ema_12'] = df['close'].ewm(span=12).mean()
-            df['ema_26'] = df['close'].ewm(span=26).mean()
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"Moving averages calculation error: {e}")
-            return df
-    
-    def _calculate_volume_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Volume indikatörleri hesapla"""
-        try:
-            df['volume_sma'] = df['volume'].rolling(window=self.volume_sma_period).mean()
-            df['volume_ratio'] = df['volume'] / df['volume_sma']
-            
-            # On Balance Volume (OBV)
-            df['obv'] = 0
-            for i in range(1, len(df)):
-                if df['close'].iloc[i] > df['close'].iloc[i-1]:
-                    df.loc[df.index[i], 'obv'] = df['obv'].iloc[i-1] + df['volume'].iloc[i]
-                elif df['close'].iloc[i] < df['close'].iloc[i-1]:
-                    df.loc[df.index[i], 'obv'] = df['obv'].iloc[i-1] - df['volume'].iloc[i]
-                else:
-                    df.loc[df.index[i], 'obv'] = df['obv'].iloc[i-1]
-            
-            # Volume Price Trend (VPT)
-            df['vpt'] = 0
-            for i in range(1, len(df)):
-                price_change = (df['close'].iloc[i] - df['close'].iloc[i-1]) / df['close'].iloc[i-1]
-                df.loc[df.index[i], 'vpt'] = df['vpt'].iloc[i-1] + (df['volume'].iloc[i] * price_change)
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"Volume indicators calculation error: {e}")
-            return df
-    
-    def _calculate_additional_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Ek indikatörler hesapla"""
-        try:
-            # Stochastic Oscillator
-            low_min = df['low'].rolling(window=14).min()
-            high_max = df['high'].rolling(window=14).max()
-            df['stoch_k'] = 100 * (df['close'] - low_min) / (high_max - low_min)
-            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-            
-            # Williams %R
-            df['williams_r'] = -100 * (high_max - df['close']) / (high_max - low_min)
-            
-            # Commodity Channel Index (CCI)
-            typical_price = (df['high'] + df['low'] + df['close']) / 3
-            sma_tp = typical_price.rolling(window=20).mean()
-            mad = typical_price.rolling(window=20).apply(lambda x: np.mean(np.abs(x - x.mean())))
-            df['cci'] = (typical_price - sma_tp) / (0.015 * mad)
-            
-            # Average True Range (ATR)
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            true_range = np.maximum(high_low, np.maximum(high_close, low_close))
-            df['atr'] = true_range.rolling(window=14).mean()
-            
-            return df
-        except Exception as e:
-            self.logger.error(f"Additional indicators calculation error: {e}")
-            return df
     
     async def _analyze_rsi(self, df: pd.DataFrame) -> Optional[TechnicalSignal]:
         """RSI analizi"""
@@ -382,16 +284,20 @@ class TechnicalAnalysisModel:
     async def _analyze_macd(self, df: pd.DataFrame) -> Optional[TechnicalSignal]:
         """MACD analizi"""
         try:
-            if 'macd' not in df.columns or df['macd'].isna().iloc[-1]:
+            macd_col = f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'
+            signal_col = f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'
+            hist_col = f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}'
+            
+            if macd_col not in df.columns or df[macd_col].isna().iloc[-1]:
                 return None
             
-            current_macd = df['macd'].iloc[-1]
-            current_signal = df['macd_signal'].iloc[-1]
-            current_histogram = df['macd_histogram'].iloc[-1]
+            current_macd = df[macd_col].iloc[-1]
+            current_signal = df[signal_col].iloc[-1]
+            current_histogram = df[hist_col].iloc[-1]
             
             # MACD crossover kontrolü
-            prev_macd = df['macd'].iloc[-2] if len(df) > 1 else current_macd
-            prev_signal = df['macd_signal'].iloc[-2] if len(df) > 1 else current_signal
+            prev_macd = df[macd_col].iloc[-2] if len(df) > 1 else current_macd
+            prev_signal = df[signal_col].iloc[-2] if len(df) > 1 else current_signal
             
             # Bullish crossover (MACD > Signal)
             if current_macd > current_signal and prev_macd <= prev_signal:
@@ -438,7 +344,7 @@ class TechnicalAnalysisModel:
             
             current_price = df['close'].iloc[-1]
             bb_position = df['bb_position'].iloc[-1]
-            bb_width = df['bb_width'].iloc[-1]
+            bb_width = df['bb_width'].iloc[-1] if 'bb_width' in df.columns else 0.05
             
             # BB position analizi
             if bb_position <= 0.1:  # Alt banda yakın
@@ -728,4 +634,219 @@ class TechnicalAnalysisModel:
             support_levels = self._group_similar_levels(support_levels)
             resistance_levels = self._group_similar_levels(resistance_levels)
             
-            return support_levels,
+            return support_levels, resistance_levels
+            
+        except Exception as e:
+            self.logger.error(f"Support/Resistance levels calculation error: {e}")
+            return [], []
+    
+    def _group_similar_levels(self, levels: List[float], threshold: float = 0.01) -> List[float]:
+        """Benzer seviyeleri grupla"""
+        if not levels:
+            return []
+        
+        levels = sorted(levels)
+        grouped = []
+        current_group = [levels[0]]
+        
+        for level in levels[1:]:
+            if abs(level - current_group[-1]) / current_group[-1] <= threshold:
+                current_group.append(level)
+            else:
+                # Grup ortalamasını al
+                grouped.append(sum(current_group) / len(current_group))
+                current_group = [level]
+        
+        # Son grubu ekle
+        grouped.append(sum(current_group) / len(current_group))
+        
+        return grouped
+    
+    async def _determine_trend(self, df: pd.DataFrame) -> str:
+        """Trend yönünü belirle"""
+        try:
+            if len(df) < self.trend_period:
+                return "SIDEWAYS"
+            
+            recent_data = df.tail(self.trend_period)
+            
+            # Price trend
+            price_slope = np.polyfit(range(len(recent_data)), recent_data['close'], 1)[0]
+            
+            # Moving average trend
+            if 'sma_20' in df.columns and 'sma_50' in df.columns:
+                sma_20_current = df['sma_20'].iloc[-1]
+                sma_50_current = df['sma_50'].iloc[-1]
+                
+                if sma_20_current > sma_50_current and price_slope > 0:
+                    return "BULLISH"
+                elif sma_20_current < sma_50_current and price_slope < 0:
+                    return "BEARISH"
+            
+            # Sadece price slope'a göre
+            if price_slope > 0.001:
+                return "BULLISH"
+            elif price_slope < -0.001:
+                return "BEARISH"
+            else:
+                return "SIDEWAYS"
+                
+        except Exception as e:
+            self.logger.error(f"Trend determination error: {e}")
+            return "SIDEWAYS"
+    
+    async def _calculate_volatility(self, df: pd.DataFrame) -> float:
+        """Volatilite hesapla"""
+        try:
+            if 'atr' in df.columns and not df['atr'].isna().iloc[-1]:
+                current_price = df['close'].iloc[-1]
+                atr = df['atr'].iloc[-1]
+                return atr / current_price
+            else:
+                # Fallback: price volatility
+                returns = df['close'].pct_change().dropna()
+                return returns.std() if len(returns) > 0 else 0.0
+                
+        except Exception as e:
+            self.logger.error(f"Volatility calculation error: {e}")
+            return 0.0
+    
+    async def _detailed_volume_analysis(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Detaylı volume analizi"""
+        try:
+            volume_analysis = {
+                'current_volume': float(df['volume'].iloc[-1]),
+                'average_volume': float(df['volume'].mean()),
+                'volume_trend': 'neutral',
+                'volume_spike': False,
+                'obv_trend': 'neutral'
+            }
+            
+            if 'volume_ratio' in df.columns:
+                current_ratio = df['volume_ratio'].iloc[-1]
+                volume_analysis['volume_ratio'] = float(current_ratio)
+                volume_analysis['volume_spike'] = current_ratio >= self.volume_spike_threshold
+                
+                # Volume trend
+                if len(df) >= 5:
+                    recent_volume = df['volume_ratio'].tail(5).mean()
+                    if recent_volume > 1.2:
+                        volume_analysis['volume_trend'] = 'increasing'
+                    elif recent_volume < 0.8:
+                        volume_analysis['volume_trend'] = 'decreasing'
+            
+            # OBV trend
+            if 'obv' in df.columns and len(df) >= 10:
+                obv_slope = np.polyfit(range(10), df['obv'].tail(10), 1)[0]
+                if obv_slope > 0:
+                    volume_analysis['obv_trend'] = 'bullish'
+                elif obv_slope < 0:
+                    volume_analysis['obv_trend'] = 'bearish'
+            
+            return volume_analysis
+            
+        except Exception as e:
+            self.logger.error(f"Volume analysis error: {e}")
+            return {
+                'current_volume': 0,
+                'average_volume': 0,
+                'volume_trend': 'neutral',
+                'volume_spike': False,
+                'obv_trend': 'neutral'
+            }
+    
+    def _calculate_confidence(self, signals: List[TechnicalSignal], df: pd.DataFrame) -> float:
+        """Confidence score hesapla"""
+        try:
+            if not signals:
+                return 0.0
+            
+            # Signal agreement
+            buy_signals = sum(1 for s in signals if s.signal == "BUY")
+            sell_signals = sum(1 for s in signals if s.signal == "SELL")
+            total_signals = len(signals)
+            
+            # Agreement ratio
+            max_agreement = max(buy_signals, sell_signals)
+            agreement_ratio = max_agreement / total_signals
+            
+            # Average strength
+            avg_strength = sum(s.strength for s in signals) / total_signals
+            
+            # Data quality factor
+            data_quality = min(len(df) / 200, 1.0)  # 200+ bars için full confidence
+            
+            # Volume confirmation
+            volume_factor = 1.0
+            if 'volume_ratio' in df.columns:
+                current_volume_ratio = df['volume_ratio'].iloc[-1]
+                if current_volume_ratio >= 1.5:  # High volume
+                    volume_factor = 1.2
+                elif current_volume_ratio < 0.5:  # Low volume
+                    volume_factor = 0.8
+            
+            # Combined confidence
+            confidence = (agreement_ratio * 0.4 + avg_strength * 0.4 + data_quality * 0.2) * volume_factor
+            
+            return min(confidence, 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation error: {e}")
+            return 0.5
+
+
+# Örnek kullanım
+if __name__ == "__main__":
+    async def test_technical_analysis():
+        """Test fonksiyonu"""
+        # Sample data oluştur
+        dates = pd.date_range(start='2023-01-01', periods=300, freq='1H')
+        np.random.seed(42)
+        
+        # Realistic price data
+        price = 50000
+        prices = [price]
+        volumes = []
+        
+        for i in range(299):
+            change = np.random.normal(0, 0.02)  # %2 volatilite
+            price = price * (1 + change)
+            prices.append(price)
+            volumes.append(np.random.uniform(100, 1000))
+        
+        # DataFrame oluştur
+        data = pd.DataFrame({
+            'timestamp': dates,
+            'open': prices,
+            'high': [p * (1 + abs(np.random.normal(0, 0.01))) for p in prices],
+            'low': [p * (1 - abs(np.random.normal(0, 0.01))) for p in prices],
+            'close': prices,
+            'volume': volumes
+        })
+        
+        # Technical analysis
+        ta_model = TechnicalAnalysisModel('BTCUSDT')
+        result = await ta_model.analyze(data)
+        
+        if result:
+            print(f"Symbol: {result.symbol}")
+            print(f"Current Price: ${result.current_price:.2f}")
+            print(f"Combined Signal: {result.combined_signal} ({result.combined_strength:.2f})")
+            print(f"Trend: {result.trend_direction}")
+            print(f"Confidence: {result.confidence:.2f}")
+            print(f"Volatility: {result.volatility:.4f}")
+            
+            print("\nIndividual Signals:")
+            for signal in result.signals:
+                print(f"  {signal.indicator}: {signal.signal} ({signal.strength:.2f}) - {signal.description}")
+            
+            print(f"\nSupport Levels: {[f'${s:.2f}' for s in result.support_levels[:3]]}")
+            print(f"Resistance Levels: {[f'${r:.2f}' for r in result.resistance_levels[:3]]}")
+            
+            print(f"\nVolume Analysis: {result.volume_analysis}")
+        else:
+            print("Technical analysis failed")
+    
+    # Test çalıştır
+    import asyncio
+    asyncio.run(test_technical_analysis())
